@@ -29,15 +29,14 @@ pub fn execute(
         match_config_path.unwrap_or_else(|| PathManager::get().match_config_path());
     let config = load_config_or_fallback(&match_config_path)?;
 
-    let niw = NiriIpcWrapper::new()?;
-    let (_, owins) = niw.receive_workspaces_and_windows()?;
+    let (_, owins) = NiriIpcWrapper::connect(dry_run)?.receive_workspaces_and_windows()?;
 
-    let mut niw = NiriIpcWrapper::new()?;
+    let mut niw = NiriIpcWrapper::connect(dry_run)?;
     let orig_focused = niw.get_focused_window()?;
     scopeguard::defer! {
         if let Err(e) = (|| {
             if let Some(Window { id, .. }) = orig_focused {
-                let mut niw = NiriIpcWrapper::new()?;
+                let mut niw = NiriIpcWrapper::connect(dry_run)?;
                 niw.send_action(Action::FocusWindow { id })?;
             }
             BjuwkResult::Ok(())
@@ -47,53 +46,7 @@ pub fn execute(
     }
 
     let reconstruction = reconstruct_windows(&config, &swins, &swses, &owins)?;
-    let stage_ws_name = format!("__niri_bjuwk_stage_{}", process::id());
-    let stage_ws_ref = WorkspaceReferenceArg::Name(stage_ws_name.clone());
-    for ((mon, ws_idx), cols) in reconstruction {
-        niw.send_action(Action::FocusMonitor {
-            output: mon.to_string(),
-        })?;
-        niw.send_action(Action::FocusWorkspace {
-            reference: WorkspaceReferenceArg::Index(u8::MAX),
-        })?;
-        niw.send_action(Action::SetWorkspaceName {
-            name: stage_ws_name.clone(),
-            workspace: None,
-        })?;
-        scopeguard::defer! {
-            if let Err(e) = (|| {
-                let mut niw = NiriIpcWrapper::new()?;
-                niw.send_action(Action::MoveWorkspaceToIndex {
-                    index: ws_idx as _,
-                    reference: Some(stage_ws_ref.clone()),
-                })?;
-                niw.send_action(Action::UnsetWorkspaceName {
-                    reference: Some(stage_ws_ref.clone()),
-                })?;
-                BjuwkResult::Ok(())
-            })() {
-                eprintln!("Failed to clean up {stage_ws_name}: {e}");
-            }
-        }
-
-        for tiles in cols {
-            for (pos, &owin) in tiles.iter().with_position() {
-                niw.send_action(Action::MoveWindowToWorkspace {
-                    window_id: Some(owin.id),
-                    reference: stage_ws_ref.clone(),
-                    focus: false,
-                })?;
-                match pos {
-                    Position::First | Position::Only => {
-                        niw.send_action(Action::FocusColumnLast {})?;
-                    }
-                    Position::Middle | Position::Last => {
-                        niw.send_action(Action::ConsumeWindowIntoColumn {})?;
-                    }
-                }
-            }
-        }
-    }
+    place_windows(&mut niw, reconstruction)?;
 
     println!("Restore complete.");
     Ok(())
@@ -196,4 +149,58 @@ fn map_workspace_id_to_position<'a>(
                 .map(|o| (Some(ws.id), (o.to_smolstr(), ws.idx)))
         })
         .collect()
+}
+
+fn place_windows(niw: &mut NiriIpcWrapper, reconstruction: HashMap<WorkspacePosition, Vec<Vec<&Window>>>) -> BjuwkResult<()> {
+    let stage_ws_name = format!("__niri_bjuwk_stage_{}", process::id());
+    let stage_ws_ref = WorkspaceReferenceArg::Name(stage_ws_name.clone());
+
+    for ((mon, ws_idx), cols) in reconstruction {
+        niw.send_action(Action::FocusMonitor {
+            output: mon.to_string(),
+        })?;
+        niw.send_action(Action::FocusWorkspace {
+            reference: WorkspaceReferenceArg::Index(u8::MAX),
+        })?;
+        niw.send_action(Action::SetWorkspaceName {
+            name: stage_ws_name.clone(),
+            workspace: None,
+        })?;
+        let dry_run = niw.dry_run;
+        scopeguard::defer! {
+            if let Err(e) = (|| {
+                let mut niw = NiriIpcWrapper::connect(dry_run)?;
+                niw.send_action(Action::MoveWorkspaceToIndex {
+                    index: ws_idx as _,
+                    reference: Some(stage_ws_ref.clone()),
+                })?;
+                niw.send_action(Action::UnsetWorkspaceName {
+                    reference: Some(stage_ws_ref.clone()),
+                })?;
+                BjuwkResult::Ok(())
+            })() {
+                eprintln!("Failed to clean up {stage_ws_name}: {e}");
+            }
+        }
+
+        for tiles in cols {
+            for (pos, &owin) in tiles.iter().with_position() {
+                niw.send_action(Action::MoveWindowToWorkspace {
+                    window_id: Some(owin.id),
+                    reference: stage_ws_ref.clone(),
+                    focus: false,
+                })?;
+                match pos {
+                    Position::First | Position::Only => {
+                        niw.send_action(Action::FocusColumnLast {})?;
+                    }
+                    Position::Middle | Position::Last => {
+                        niw.send_action(Action::ConsumeWindowIntoColumn {})?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

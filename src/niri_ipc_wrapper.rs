@@ -2,13 +2,17 @@ use niri_ipc::{Action, Event, Reply, Request, Response, Window, Workspace, socke
 
 use crate::error::{BjuwkError, BjuwkResult, IoContextExt};
 
-pub struct NiriIpcWrapper(Socket);
+pub struct NiriIpcWrapper {
+    socket: Socket,
+    pub dry_run: bool,
+}
 
 impl NiriIpcWrapper {
-    pub fn new() -> BjuwkResult<Self> {
-        Socket::connect()
-            .map(Self)
-            .map_err(|e| BjuwkError::Other(format!("Cannot connect to niri IPC: {e}")))
+    pub fn connect(dry_run: bool) -> BjuwkResult<Self> {
+        let socket = Socket::connect()
+            .map_err(|e| BjuwkError::Other(format!("Cannot connect to niri IPC: {e}")))?;
+        let niw = Self { socket, dry_run };
+        Ok(niw)
     }
 
     pub fn get_focused_window(&mut self) -> BjuwkResult<Option<Window>> {
@@ -25,7 +29,7 @@ impl NiriIpcWrapper {
             Ok(Response::Handled) => {}
             reply => return Err(reply.into()),
         }
-        let mut read_events = self.0.read_events();
+        let mut read_events = self.socket.read_events();
         let mut workspaces_ret = None;
         let mut windows_ret = None;
         let mut pending_count = 2u8;
@@ -52,8 +56,10 @@ impl NiriIpcWrapper {
     }
 
     pub fn send_action(&mut self, action: Action) -> BjuwkResult<()> {
-        println!("#### send_action {action:?}");
-        std::thread::sleep(std::time::Duration::from_millis(1024));
+        if self.dry_run {
+            println!("(dry-run) action: {action:?}");
+            return Ok(());
+        }
         let reply = self.request(Request::Action(action))?;
         match reply {
             Ok(Response::Handled) => Ok(()),
@@ -63,7 +69,7 @@ impl NiriIpcWrapper {
 
     fn request(&mut self, request: Request) -> BjuwkResult<Reply> {
         let context = format!("{request:?}");
-        let reply = self.0.send(request).context(context)?;
+        let reply = self.socket.send(request).context(context)?;
         Ok(reply)
     }
 }

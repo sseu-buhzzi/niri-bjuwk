@@ -24,7 +24,7 @@ fn write_store() -> BjuwkResult<PathBuf> {
     let pm = PathManager::get();
     let store_path = pm.snapshot_path(Local::now());
 
-    let niw = NiriIpcWrapper::new()?;
+    let niw = NiriIpcWrapper::connect(false)?;
     let (workspaces, windows) = niw.receive_workspaces_and_windows()?;
 
     let snap = Snapshot::new(workspaces, windows);
