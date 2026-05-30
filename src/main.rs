@@ -22,6 +22,8 @@ enum Command {
         match_config: Option<PathBuf>,
         #[arg(short = 'n', long)]
         dry_run: bool,
+        #[arg(long)]
+        no_workspace_rename: bool,
     },
 }
 
@@ -37,13 +39,14 @@ fn main() -> BjuwkResult<()> {
             snapshot,
             match_config,
             dry_run,
+            no_workspace_rename,
         } => {
             if dry_run {
                 println!("(dry-run) Restoring window layout...");
             } else {
                 println!("Restoring window layout...");
             }
-            niri_bjuwk::restore::execute(snapshot, match_config, dry_run)?;
+            niri_bjuwk::restore::execute(snapshot, match_config, dry_run, no_workspace_rename)?;
         }
     }
 

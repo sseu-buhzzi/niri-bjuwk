@@ -16,6 +16,7 @@ pub fn execute(
     snapshot_path: Option<PathBuf>,
     match_config_path: Option<PathBuf>,
     dry_run: bool,
+    no_workspace_rename: bool,
 ) -> BjuwkResult<()> {
     let snapshot_path = snapshot_path.unwrap_or_else(|| PathManager::get().snapshot_link_path());
     let snap = Snapshot::load(&snapshot_path)?;
@@ -46,7 +47,10 @@ pub fn execute(
     }
 
     let reconstruction = reconstruct_windows(&config, &swins, &swses, &owins)?;
-    place_windows(&mut niw, reconstruction)?;
+    restore_windows(&mut niw, reconstruction)?;
+
+    let (owses, _) = NiriIpcWrapper::connect(dry_run)?.receive_workspaces_and_windows()?;
+    restore_workspace_names(&mut niw, no_workspace_rename, &swses, &owses)?;
 
     println!("Restore complete.");
     Ok(())
@@ -137,21 +141,10 @@ fn reconstruct_windows<'a>(
     Ok(reconstruction)
 }
 
-type WorkspacePosition = (SmolStr, u8);
-
-fn map_workspace_id_to_position<'a>(
-    wses: impl IntoIterator<Item = &'a Workspace>,
-) -> HashMap<Option<WorkspaceId>, WorkspacePosition> {
-    wses.into_iter()
-        .filter_map(|ws| {
-            ws.output
-                .as_ref()
-                .map(|o| (Some(ws.id), (o.to_smolstr(), ws.idx)))
-        })
-        .collect()
-}
-
-fn place_windows(niw: &mut NiriIpcWrapper, reconstruction: HashMap<WorkspacePosition, Vec<Vec<&Window>>>) -> BjuwkResult<()> {
+fn restore_windows(
+    niw: &mut NiriIpcWrapper,
+    reconstruction: HashMap<WorkspacePosition, Vec<Vec<&Window>>>,
+) -> BjuwkResult<()> {
     let stage_ws_name = format!("__niri_bjuwk_stage_{}", process::id());
     let stage_ws_ref = WorkspaceReferenceArg::Name(stage_ws_name.clone());
 
@@ -203,4 +196,60 @@ fn place_windows(niw: &mut NiriIpcWrapper, reconstruction: HashMap<WorkspacePosi
     }
 
     Ok(())
+}
+
+fn restore_workspace_names(
+    niw: &mut NiriIpcWrapper,
+    no_workspace_rename: bool,
+    swses: &[Workspace],
+    owses: &[Workspace],
+) -> BjuwkResult<()> {
+    let ows_pos_to_id = map_workspace_position_to_id(owses);
+    for sws in swses {
+        let Some(smon) = sws.output.as_ref() else {
+            continue;
+        };
+        let Some(sws_name) = sws.name.as_ref() else {
+            continue;
+        };
+        let pos = (smon.to_smolstr(), sws.idx);
+        let Some(&ows_id) = ows_pos_to_id.get(&pos) else {
+            continue;
+        };
+
+        if !no_workspace_rename {
+            niw.send_action(Action::UnsetWorkspaceName {
+                reference: Some(WorkspaceReferenceArg::Name(sws_name.to_string())),
+            })?;
+        }
+        niw.send_action(Action::SetWorkspaceName {
+            name: sws_name.to_string(),
+            workspace: Some(WorkspaceReferenceArg::Id(ows_id)),
+        })?;
+    }
+    Ok(())
+}
+
+type WorkspacePosition = (SmolStr, u8);
+
+fn map_workspace_id_to_position<'a>(
+    wses: impl IntoIterator<Item = &'a Workspace>,
+) -> HashMap<Option<WorkspaceId>, WorkspacePosition> {
+    wses.into_iter()
+        .filter_map(|ws| {
+            let mon = ws.output.as_ref()?;
+            Some((Some(ws.id), (mon.to_smolstr(), ws.idx)))
+        })
+        .collect()
+}
+
+fn map_workspace_position_to_id<'a>(
+    wses: impl IntoIterator<Item = &'a Workspace>,
+) -> HashMap<WorkspacePosition, WorkspaceId> {
+    wses.into_iter()
+        .filter_map(|ws| {
+            let mon = ws.output.as_ref()?;
+            Some(((mon.to_smolstr(), ws.idx), ws.id))
+        })
+        .collect()
 }
