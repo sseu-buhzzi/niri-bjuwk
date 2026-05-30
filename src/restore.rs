@@ -12,11 +12,34 @@ use crate::niri_ipc_wrapper::{NiriIpcWrapper, WorkspaceId};
 use crate::path_util::PathManager;
 use crate::snapshot::Snapshot;
 
+pub struct RestoreContext {
+    pub dry_run: bool,
+    pub restore_windows: bool,
+    pub restore_workspaces: bool,
+    pub rename_workspaces: bool,
+}
+
+impl RestoreContext {
+    pub fn new(
+        dry_run: bool,
+        windows_only: bool,
+        workspaces_only: bool,
+        no_rename_workspaces: bool,
+    ) -> Self {
+        let restore_all = !windows_only && !workspaces_only;
+        Self {
+            dry_run,
+            restore_windows: restore_all || windows_only,
+            restore_workspaces: restore_all || workspaces_only,
+            rename_workspaces: !no_rename_workspaces,
+        }
+    }
+}
+
 pub fn execute(
     snapshot_path: Option<PathBuf>,
     match_config_path: Option<PathBuf>,
-    dry_run: bool,
-    no_workspace_rename: bool,
+    context: &RestoreContext,
 ) -> BjuwkResult<()> {
     let snapshot_path = snapshot_path.unwrap_or_else(|| PathManager::get().snapshot_link_path());
     let snap = Snapshot::load(&snapshot_path)?;
@@ -30,14 +53,12 @@ pub fn execute(
         match_config_path.unwrap_or_else(|| PathManager::get().match_config_path());
     let config = load_config_or_fallback(&match_config_path)?;
 
-    let (_, owins) = NiriIpcWrapper::connect(dry_run)?.receive_workspaces_and_windows()?;
-
-    let mut niw = NiriIpcWrapper::connect(dry_run)?;
+    let mut niw = NiriIpcWrapper::connect(context.dry_run)?;
     let orig_focused = niw.get_focused_window()?;
     scopeguard::defer! {
         if let Err(e) = (|| {
             if let Some(Window { id, .. }) = orig_focused {
-                let mut niw = NiriIpcWrapper::connect(dry_run)?;
+                let mut niw = NiriIpcWrapper::connect(context.dry_run)?;
                 niw.send_action(Action::FocusWindow { id })?;
             }
             BjuwkResult::Ok(())
@@ -46,11 +67,18 @@ pub fn execute(
         }
     }
 
-    let reconstruction = reconstruct_windows(&config, &swins, &swses, &owins)?;
-    restore_windows(&mut niw, reconstruction)?;
+    if context.restore_windows {
+        let (_, owins) =
+            NiriIpcWrapper::connect(context.dry_run)?.receive_workspaces_and_windows()?;
+        let reconstruction = reconstruct_windows(&config, &swins, &swses, &owins)?;
+        restore_windows(&mut niw, reconstruction)?;
+    }
 
-    let (owses, _) = NiriIpcWrapper::connect(dry_run)?.receive_workspaces_and_windows()?;
-    restore_workspace_names(&mut niw, no_workspace_rename, &swses, &owses)?;
+    if context.restore_workspaces {
+        let (owses, _) =
+            NiriIpcWrapper::connect(context.dry_run)?.receive_workspaces_and_windows()?;
+        restore_workspace_names(&mut niw, context.rename_workspaces, &swses, &owses)?;
+    }
 
     println!("Restore complete.");
     Ok(())
@@ -200,7 +228,7 @@ fn restore_windows(
 
 fn restore_workspace_names(
     niw: &mut NiriIpcWrapper,
-    no_workspace_rename: bool,
+    rename_workspaces: bool,
     swses: &[Workspace],
     owses: &[Workspace],
 ) -> BjuwkResult<()> {
@@ -217,7 +245,7 @@ fn restore_workspace_names(
             continue;
         };
 
-        if !no_workspace_rename {
+        if rename_workspaces {
             niw.send_action(Action::UnsetWorkspaceName {
                 reference: Some(WorkspaceReferenceArg::Name(sws_name.to_string())),
             })?;

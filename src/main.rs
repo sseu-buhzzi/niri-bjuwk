@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use niri_bjuwk::error::BjuwkResult;
+use niri_bjuwk::{error::BjuwkResult, restore::RestoreContext};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -23,7 +23,11 @@ enum Command {
         #[arg(short = 'n', long)]
         dry_run: bool,
         #[arg(long)]
-        no_workspace_rename: bool,
+        windows_only: bool,
+        #[arg(long)]
+        workspaces_only: bool,
+        #[arg(long)]
+        no_rename_workspaces: bool,
     },
 }
 
@@ -39,14 +43,20 @@ fn main() -> BjuwkResult<()> {
             snapshot,
             match_config,
             dry_run,
-            no_workspace_rename,
+            windows_only,
+            workspaces_only,
+            no_rename_workspaces,
         } => {
             if dry_run {
                 println!("(dry-run) Restoring window layout...");
             } else {
                 println!("Restoring window layout...");
             }
-            niri_bjuwk::restore::execute(snapshot, match_config, dry_run, no_workspace_rename)?;
+            niri_bjuwk::restore::execute(
+                snapshot,
+                match_config,
+                &RestoreContext::new(dry_run, windows_only, workspaces_only, no_rename_workspaces),
+            )?;
         }
     }
 
