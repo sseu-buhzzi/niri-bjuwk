@@ -232,7 +232,7 @@ fn restore_workspace_names(
     swses: &[Workspace],
     owses: &[Workspace],
 ) -> BjuwkResult<()> {
-    let ows_pos_to_id = map_workspace_position_to_id(owses);
+    let pos_to_ows = map_workspace_by_position(owses);
     for sws in swses {
         let Some(smon) = sws.output.as_ref() else {
             continue;
@@ -241,7 +241,7 @@ fn restore_workspace_names(
             continue;
         };
         let pos = (smon.to_smolstr(), sws.idx);
-        let Some(&ows_id) = ows_pos_to_id.get(&pos) else {
+        let Some(&ows) = pos_to_ows.get(&pos) else {
             continue;
         };
 
@@ -250,10 +250,12 @@ fn restore_workspace_names(
                 reference: Some(WorkspaceReferenceArg::Name(sws_name.to_string())),
             })?;
         }
-        niw.send_action(Action::SetWorkspaceName {
-            name: sws_name.to_string(),
-            workspace: Some(WorkspaceReferenceArg::Id(ows_id)),
-        })?;
+        if rename_workspaces || ows.name.is_none() {
+            niw.send_action(Action::SetWorkspaceName {
+                name: sws_name.to_string(),
+                workspace: Some(WorkspaceReferenceArg::Id(ows.id)),
+            })?;
+        }
     }
     Ok(())
 }
@@ -271,13 +273,13 @@ fn map_workspace_id_to_position<'a>(
         .collect()
 }
 
-fn map_workspace_position_to_id<'a>(
+fn map_workspace_by_position<'a>(
     wses: impl IntoIterator<Item = &'a Workspace>,
-) -> HashMap<WorkspacePosition, WorkspaceId> {
+) -> HashMap<WorkspacePosition, &'a Workspace> {
     wses.into_iter()
         .filter_map(|ws| {
             let mon = ws.output.as_ref()?;
-            Some(((mon.to_smolstr(), ws.idx), ws.id))
+            Some(((mon.to_smolstr(), ws.idx), ws))
         })
         .collect()
 }
